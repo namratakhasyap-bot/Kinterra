@@ -1,0 +1,191 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required)
+    //   - username: string (required, unique)
+    //   - photoURL: string (optional)
+    //   - bio: string (optional, max 500)
+    //   - interests: list (optional, max 20)
+    //   - isBot: bool (required)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: posts
+    // Document ID: {postId}
+    // Fields:
+    //   - id: string (required)
+    //   - authorUid: string (required)
+    //   - content: string (required, max 2000)
+    //   - type: string (required, 'thought' or 'highlight')
+    //   - imageUrl: string (optional)
+    //   - isModerated: bool (required)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: chats
+    // Document ID: {chatId}
+    // Fields:
+    //   - id: string (required)
+    //   - participants: list (required, exactly 2)
+    //   - lastMessage: string (optional)
+    //   - lastTimestamp: timestamp (optional)
+    //
+    // Collection: messages
+    // Document ID: {messageId} (under /chats/{chatId}/messages)
+    // Fields:
+    //   - id: string (required)
+    //   - chatId: string (required)
+    //   - senderUid: string (required)
+    //   - text: string (required, max 1000)
+    //   - createdAt: timestamp (required)
+    //
+    // Collection: friendRequests
+    // Document ID: {requestId}
+    // Fields:
+    //   - id: string (required)
+    //   - fromUid: string (required)
+    //   - toUid: string (required)
+    //   - status: string (required, 'pending', 'accepted', 'declined')
+    //   - createdAt: timestamp (required)
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        request.auth.token.email == "namratakhasyap@gmail.com" && 
+        request.auth.token.email_verified == true
+      );
+    }
+
+    function isValidUser(data) {
+      return data.keys().hasAll(['uid', 'username', 'isBot', 'createdAt']) &&
+             data.uid is string &&
+             data.username is string && data.username.size() >= 3 && data.username.size() <= 30 &&
+             data.isBot is bool &&
+             data.createdAt is timestamp &&
+             (!('bio' in data) || (data.bio is string && data.bio.size() <= 500)) &&
+             (!('interests' in data) || (data.interests is list && data.interests.size() <= 20)) &&
+             (!('theme' in data) || (data.theme in ['light', 'dark'])) &&
+             (!('preferences' in data) || (data.preferences is map));
+    }
+
+    function isValidPost(data) {
+      return data.keys().hasAll(['id', 'authorUid', 'content', 'type', 'isModerated', 'createdAt']) &&
+             data.id is string &&
+             data.authorUid is string &&
+             data.content is string && data.content.size() <= 2000 &&
+             data.type in ['thought', 'highlight'] &&
+             data.isModerated is bool &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidChat(data) {
+      return data.keys().hasAll(['id', 'participants']) &&
+             data.id is string &&
+             data.participants is list && data.participants.size() == 2 &&
+             (!('lastMessage' in data) || data.lastMessage is string) &&
+             (!('lastTimestamp' in data) || data.lastTimestamp is timestamp);
+    }
+
+    function isValidMessage(data) {
+      return data.keys().hasAll(['id', 'chatId', 'senderUid', 'text', 'createdAt']) &&
+             data.id is string &&
+             data.chatId is string &&
+             data.senderUid is string &&
+             data.text is string && data.text.size() <= 1000 &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidFriendRequest(data) {
+      return data.keys().hasAll(['id', 'fromUid', 'toUid', 'status', 'createdAt']) &&
+             data.id is string &&
+             data.fromUid is string &&
+             data.toUid is string &&
+             data.status in ['pending', 'accepted', 'declined'] &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidReport(data) {
+      return data.keys().hasAll(['id', 'reporterUid', 'reportedUid', 'reason', 'createdAt']) &&
+             data.id is string &&
+             data.reporterUid is string &&
+             data.reportedUid is string &&
+             data.reason is string && data.reason.size() > 0 && data.reason.size() <= 1000 &&
+             data.createdAt is timestamp;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow create: if (isOwner(userId) && isValidUser(request.resource.data) && request.resource.data.isBot == false) ||
+                      (isAuthenticated() && isValidUser(request.resource.data) && request.resource.data.isBot == true);
+      allow update: if (isOwner(userId) || isAdmin()) && isValidUser(request.resource.data) && 
+                      request.resource.data.uid == resource.data.uid &&
+                      request.resource.data.isBot == resource.data.isBot;
+      allow delete: if isAdmin();
+    }
+
+    match /posts/{postId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && isValidPost(request.resource.data) && request.resource.data.authorUid == request.auth.uid;
+      allow update: if (isAuthenticated() && resource.data.authorUid == request.auth.uid && isValidPost(request.resource.data)) || isAdmin();
+      allow delete: if (isAuthenticated() && resource.data.authorUid == request.auth.uid) || isAdmin();
+    }
+
+    match /chats/{chatId} {
+      allow get: if isAuthenticated() && (resource == null || request.auth.uid in resource.data.participants);
+      allow list: if isAuthenticated() && request.auth.uid in resource.data.participants;
+      allow create: if isAuthenticated() && isValidChat(request.resource.data) && request.auth.uid in request.resource.data.participants;
+      allow update: if isAuthenticated() && request.auth.uid in resource.data.participants && isValidChat(request.resource.data);
+      allow delete: if isAdmin();
+
+      match /messages/{messageId} {
+        allow read: if isAuthenticated() && 
+                        exists(/databases/$(database)/documents/chats/$(chatId)) &&
+                        request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants;
+        allow create: if isAuthenticated() && 
+                        exists(/databases/$(database)/documents/chats/$(chatId)) &&
+                        request.auth.uid in get(/databases/$(database)/documents/chats/$(chatId)).data.participants &&
+                        isValidMessage(request.resource.data) &&
+                        request.resource.data.senderUid == request.auth.uid;
+      }
+    }
+
+    match /friendRequests/{requestId} {
+      allow get: if isAuthenticated() && (resource == null || resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+      allow list: if isAuthenticated() && (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+      allow create: if isAuthenticated() && 
+                      isValidFriendRequest(request.resource.data) && 
+                      request.resource.data.fromUid == request.auth.uid;
+      allow update: if isAuthenticated() && 
+                      isValidFriendRequest(request.resource.data) && 
+                      (resource.data.toUid == request.auth.uid || resource.data.fromUid == request.auth.uid);
+      allow delete: if isAdmin() || (isAuthenticated() && resource.data.fromUid == request.auth.uid);
+    }
+
+    match /reports/{reportId} {
+      allow read, update, delete: if isAdmin();
+      allow create: if isAuthenticated() && 
+                      isValidReport(request.resource.data) && 
+                      request.resource.data.reporterUid == request.auth.uid;
+    }
+  }
+}
